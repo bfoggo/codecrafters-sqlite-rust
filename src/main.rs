@@ -22,12 +22,14 @@ fn main() -> Result<()> {
             // The page size is stored at the 16th byte offset, using 2 bytes in big-endian order
             #[allow(unused_variables)]
             let page_size = u16::from_be_bytes([header[16], header[17]]);
+            let mut partial_file_header = [0; 5];
+            file.read_exact(&mut partial_file_header)?;
+            let num_cells = u16::from_be_bytes([partial_file_header[3], partial_file_header[4]]);
 
-            // You can use print statements as follows for debugging, they'll be visible when running tests.
-            eprintln!("Logs from your program will appear here!");
-
-            // Uncomment this block to pass the first stage
             println!("database page size: {}", page_size);
+            println!("number of tables: {}", num_cells);
+
+
         }
         _ => bail!("Missing or invalid command passed: {}", command),
     }
