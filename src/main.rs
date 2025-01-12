@@ -40,7 +40,20 @@ fn main() -> Result<()> {
                 println!("{}", table.name);
             }
         }
-        _ => bail!("Missing or invalid command passed: {}", command),
+        select_count_from => {
+            let mut file = File::open(&args[1])?;
+            let dbheader = DbHeader::from_file(&mut file)?;
+            let page = Page::from_file(&mut file, TABLESCHEMA_PAGE, &dbheader)?;
+            let schema = SqliteSchema::from_page(&page)?;
+            let tablename = *select_count_from
+                .split(" ")
+                .collect::<Vec<_>>()
+                .last()
+                .unwrap();
+            let table = schema.tables.iter().find(|t| t.name == tablename);
+            let page = Page::from_file(&mut file, table.unwrap().rootpage, &dbheader)?;
+            println!("{}", page.header.num_cells);
+        }
     }
 
     Ok(())
@@ -139,6 +152,7 @@ impl PageHeader {
     }
 }
 
+#[derive(Debug)]
 struct SqliteSchema {
     tables: Vec<Table>,
 }
@@ -154,6 +168,7 @@ impl SqliteSchema {
     }
 }
 
+#[derive(Debug)]
 struct Table {
     tabletype: String,
     name: String,
