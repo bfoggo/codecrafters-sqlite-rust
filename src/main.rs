@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use std::any::Any;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{prelude::*, SeekFrom};
 use syntax::statement::Statement;
@@ -7,7 +7,7 @@ use syntax::statement::Statement;
 mod utils;
 use utils::decode_varint;
 mod typecodes;
-use typecodes::{decode_serial_types, SqlValue, TypeCode};
+use typecodes::{decode_serial_types, SqlValue};
 mod syntax;
 use syntax::tokenizer::tokenize;
 
@@ -80,7 +80,7 @@ fn main() -> Result<()> {
             let schema = SqliteSchema::from_page(&page)?;
             let parsed_select_stmt = syntax::parse(&select_rows);
             let (cols, tablename) = match parsed_select_stmt {
-                Statement::Select(stmt) => (stmt.columns, stmt.table),
+                Statement::Select(ref stmt) => (stmt.columns.clone(), stmt.table.clone()),
                 _ => panic!("Expected Select statement"),
             };
             let table = schema.tables.iter().find(|t| t.name == tablename);
@@ -95,11 +95,52 @@ fn main() -> Result<()> {
                     .columns
                     .iter()
                     .position(|c| c.name == selected_col);
-                indices_of_selected_cols.push(index_of_selected_col.unwrap());
+                match index_of_selected_col {
+                    Some(ix) => {
+                        indices_of_selected_cols.push(ix);
+                    }
+                    None => panic!("Column not found: {}", selected_col),
+                }
+            }
+            let mut indices_of_where_cols = Vec::new();
+            let mut where_clause = Vec::new();
+            match parsed_select_stmt {
+                Statement::Select(ref stmt) => {
+                    for clause in stmt.where_clause.iter() {
+                        let index_of_where_col = table_schema
+                            .columns
+                            .iter()
+                            .position(|c| c.name == clause.column);
+                        match index_of_where_col {
+                            Some(ix) => {
+                                indices_of_where_cols.push(ix);
+                                where_clause.push(clause);
+                            }
+                            None => panic!("Column not found: {}", clause.column),
+                        }
+                    }
+                }
+                _ => panic!("Expected Select statement"),
             }
             let table_page = Page::from_file(&mut file, table.unwrap().rootpage, &dbheader)?;
-            for i in 0..table_page.header.num_cells {
+            'outer: for i in 0..table_page.header.num_cells {
                 let record = read_record(&table_page, i as usize)?;
+                for (i, where_idx) in indices_of_where_cols.iter().enumerate() {
+                    let where_col_val = &record.values[*where_idx];
+                    let where_clause_val = &where_clause
+                        .iter()
+                        .find(|c| c.column == where_clause[i].column)
+                        .unwrap()
+                        .value;
+                    match where_col_val {
+                        SqlValue::Text(ref val) => {
+                            if val != where_clause_val {
+                                continue 'outer;
+                            }
+                        }
+                        _ => panic!("Only text values are supported for now"),
+                    }
+                }
                 let mut selected_record_cols = Vec::new();
                 for ix in &indices_of_selected_cols {
                     match record.values[*ix] {

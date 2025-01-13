@@ -177,7 +177,7 @@ pub enum LiteralKind {
     Str(String),
     Blob(String),
     Integer(String),
-    Float(String),
+    Real(String),
 }
 
 pub fn tokenize(input: &str) -> Vec<Token> {
@@ -347,7 +347,7 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                     }
                 }
                 if is_float {
-                    tokens.push(Token::Literal(LiteralKind::Float(number)));
+                    tokens.push(Token::Literal(LiteralKind::Real(number)));
                 } else {
                     tokens.push(Token::Literal(LiteralKind::Integer(number)));
                 }
@@ -383,8 +383,29 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                             continue;
                         }
                     }
+                } else if c == '\'' {
+                    let mut string = String::new();
+                    while let Some(c) = iter.next() {
+                        if c == '\'' {
+                            iter.next();
+                            break;
+                        }
+                        string.push(c);
+                    }
+                    tokens.push(Token::Literal(LiteralKind::Str(string)));
+                } else if c == '"' {
+                    let mut string = String::new();
+                    while let Some(c) = iter.next() {
+                        if c == '"' {
+                            iter.next();
+                            break;
+                        }
+                        string.push(c);
+                    }
+                    tokens.push(Token::Literal(LiteralKind::Blob(string)));
+                } else{
+                    tokens.push(Token::Operator(c.to_string()));
                 }
-                tokens.push(Token::Operator(c.to_string()));
             }
         }
     }
