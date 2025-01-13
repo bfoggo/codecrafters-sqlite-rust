@@ -78,7 +78,12 @@ fn main() -> Result<()> {
             let dbheader = DbHeader::from_file(&mut file)?;
             let page = Page::from_file(&mut file, TABLESCHEMA_PAGE, &dbheader)?;
             let schema = SqliteSchema::from_page(&page)?;
-            let tablename = *select_rows.split(" ").collect::<Vec<_>>().last().unwrap();
+            let parsed_select_stmt = syntax::parse(&select_rows);
+            println!("{:?}", parsed_select_stmt);
+            let (cols, tablename) = match parsed_select_stmt {
+                Statement::Select(stmt) => (stmt.columns, stmt.table),
+                _ => panic!("Expected Select statement"),
+            };
             let table = schema.tables.iter().find(|t| t.name == tablename);
             let parsed_table_sql = syntax::parse(&table.unwrap().sql);
             let table_schema = match parsed_table_sql {

@@ -4,6 +4,7 @@ use std::slice::Iter;
 use crate::syntax::create_table::CreateTableStmt;
 use crate::typecodes::TypeCode;
 
+use super::select::SelectStmt;
 use super::tokenizer::Token;
 use super::Parse;
 
@@ -32,7 +33,7 @@ pub enum Statement {
     Release,
     Rollback,
     Savepoint,
-    Select,
+    Select(SelectStmt),
     Update,
     Vacuum,
 }
@@ -50,6 +51,10 @@ impl Parse for Statement {
                     }
                     _ => unimplemented!(),
                 }
+            }
+            Token::Select => {
+                let (stmt, consumed) = SelectStmt::parse(input);
+                (Statement::Select(stmt), consumed)
             }
             _ => unimplemented!(),
         }
