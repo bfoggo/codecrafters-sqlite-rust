@@ -2,16 +2,18 @@ use anyhow::{bail, Result};
 use std::any::Any;
 use std::fs::File;
 use std::io::{prelude::*, SeekFrom};
+use syntax::statement::Statement;
 
 mod utils;
 use utils::decode_varint;
 mod typecodes;
-use typecodes::{decode_serial_types, SqlValue};
+use typecodes::{decode_serial_types, SqlValue, TypeCode};
+mod syntax;
+use syntax::tokenizer::tokenize;
 
 const TABLESCHEMA_PAGE: u64 = 1;
 
 fn main() -> Result<()> {
-    // Parse arguments
     let args = std::env::args().collect::<Vec<_>>();
     match args.len() {
         0 | 1 => bail!("Missing <database path> and <command>"),
@@ -19,7 +21,6 @@ fn main() -> Result<()> {
         _ => {}
     }
 
-    // Parse command and act accordingly
     let command = &args[2];
     match command.as_str() {
         ".dbinfo" => {
@@ -40,7 +41,25 @@ fn main() -> Result<()> {
                 println!("{}", table.name);
             }
         }
-        select_count_from => {
+        ".tokenize" => {
+            let mut file = File::open(&args[1])?;
+            let input = std::fs::read_to_string(&args[1])?;
+            let tokenized = tokenize(&input);
+            for token in tokenized {
+                println!("{:?}", token);
+            }
+        }
+        ".parse" => {
+            let mut file = File::open(&args[1])?;
+            let input = std::fs::read_to_string(&args[1])?;
+            let stmt = syntax::parse(&input);
+            println!("{:?}", stmt);
+        }
+        select_count_from
+            if select_count_from
+                .to_uppercase()
+                .starts_with("SELECT COUNT(*) FROM") =>
+        {
             let mut file = File::open(&args[1])?;
             let dbheader = DbHeader::from_file(&mut file)?;
             let page = Page::from_file(&mut file, TABLESCHEMA_PAGE, &dbheader)?;
@@ -54,6 +73,33 @@ fn main() -> Result<()> {
             let page = Page::from_file(&mut file, table.unwrap().rootpage, &dbheader)?;
             println!("{}", page.header.num_cells);
         }
+        select_rows if select_rows.to_uppercase().starts_with("SELECT") => {
+            let mut file = File::open(&args[1])?;
+            let dbheader = DbHeader::from_file(&mut file)?;
+            let page = Page::from_file(&mut file, TABLESCHEMA_PAGE, &dbheader)?;
+            let schema = SqliteSchema::from_page(&page)?;
+            let tablename = *select_rows.split(" ").collect::<Vec<_>>().last().unwrap();
+            let table = schema.tables.iter().find(|t| t.name == tablename);
+            let parsed_table_sql = syntax::parse(&table.unwrap().sql);
+            let table_schema = match parsed_table_sql {
+                Statement::CreateTable(stmt) => TableSchema::from_ast(&stmt),
+                _ => panic!("Expected CreateTable statement"),
+            };
+            let selected_col = select_rows.split(" ").nth(1).unwrap(); // I haven't implemented SELECT parsing yet
+            let index_of_selected_col = table_schema
+                .columns
+                .iter()
+                .position(|c| c.name == selected_col);
+            let table_page = Page::from_file(&mut file, table.unwrap().rootpage, &dbheader)?;
+            for i in 0..table_page.header.num_cells {
+                let record = read_record(&table_page, i as usize)?;
+                match record.values[index_of_selected_col.unwrap()] {
+                    SqlValue::Text(ref val) => println!("{}", val),
+                    _ => panic!("Only text values are supported for now"),
+                }
+            }
+        }
+        _ => bail!("Unknown command: {}", command),
     }
 
     Ok(())
@@ -169,12 +215,39 @@ impl SqliteSchema {
 }
 
 #[derive(Debug)]
+struct TableSchema {
+    name: String,
+    columns: Vec<Column>,
+}
+
+impl TableSchema {
+    fn from_ast(ast: &syntax::create_table::CreateTableStmt) -> TableSchema {
+        let name = ast.table_name.clone();
+        let columns = ast.cols().iter().map(Column::from_ast).collect();
+        TableSchema { name, columns }
+    }
+}
+
+#[derive(Debug)]
 struct Table {
     tabletype: String,
     name: String,
     tbl_name: String,
     rootpage: u64,
     sql: String,
+}
+
+#[derive(Debug)]
+struct Column {
+    name: String,
+}
+
+impl Column {
+    fn from_ast(ast: &syntax::create_table::ColumnDef) -> Column {
+        Column {
+            name: ast.name.clone(),
+        }
+    }
 }
 
 impl Table {
@@ -244,9 +317,3 @@ fn read_record(page: &Page, cell_index: usize) -> Result<Record> {
         values,
     })
 }
-
-struct Null;
-struct Zero(i32);
-struct One(i32);
-struct Blob(Vec<u8>);
-struct SqliteStr(String);

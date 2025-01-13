@@ -1,6 +1,6 @@
 use crate::utils::decode_varint;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TypeCode {
     Null,
     I8,
@@ -86,6 +86,17 @@ impl TypeCode {
             _ => {
                 panic!("Not implemented");
             }
+        }
+    }
+
+    pub fn parse_str(data: &str) -> TypeCode {
+        match data.to_uppercase().as_str() {
+            "NULL" => TypeCode::Null,
+            "INTEGER" => TypeCode::I64,
+            "REAL" => TypeCode::F64,
+            "TEXT" => TypeCode::Text(0),
+            "BLOB" => TypeCode::Blob(0),
+            _ => panic!("Unknown type code: {}", data),
         }
     }
 }
