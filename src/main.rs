@@ -79,7 +79,6 @@ fn main() -> Result<()> {
             let page = Page::from_file(&mut file, TABLESCHEMA_PAGE, &dbheader)?;
             let schema = SqliteSchema::from_page(&page)?;
             let parsed_select_stmt = syntax::parse(&select_rows);
-            println!("{:?}", parsed_select_stmt);
             let (cols, tablename) = match parsed_select_stmt {
                 Statement::Select(stmt) => (stmt.columns, stmt.table),
                 _ => panic!("Expected Select statement"),
@@ -90,18 +89,28 @@ fn main() -> Result<()> {
                 Statement::CreateTable(stmt) => TableSchema::from_ast(&stmt),
                 _ => panic!("Expected CreateTable statement"),
             };
-            let selected_col = select_rows.split(" ").nth(1).unwrap(); // I haven't implemented SELECT parsing yet
-            let index_of_selected_col = table_schema
-                .columns
-                .iter()
-                .position(|c| c.name == selected_col);
+            let mut indices_of_selected_cols = Vec::new();
+            for selected_col in cols {
+                let index_of_selected_col = table_schema
+                    .columns
+                    .iter()
+                    .position(|c| c.name == selected_col);
+                indices_of_selected_cols.push(index_of_selected_col.unwrap());
+            }
             let table_page = Page::from_file(&mut file, table.unwrap().rootpage, &dbheader)?;
             for i in 0..table_page.header.num_cells {
                 let record = read_record(&table_page, i as usize)?;
-                match record.values[index_of_selected_col.unwrap()] {
-                    SqlValue::Text(ref val) => println!("{}", val),
-                    _ => panic!("Only text values are supported for now"),
+                let mut selected_record_cols = Vec::new();
+                for ix in &indices_of_selected_cols {
+                    match record.values[*ix] {
+                        SqlValue::Text(ref val) => {
+                            selected_record_cols.push(val.clone());
+                        }
+                        _ => panic!("Only text values are supported for now"),
+                    }
                 }
+                let cols_as_joined_str = selected_record_cols.join("|");
+                println!("{}", cols_as_joined_str);
             }
         }
         _ => bail!("Unknown command: {}", command),

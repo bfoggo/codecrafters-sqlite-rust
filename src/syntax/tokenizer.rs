@@ -186,7 +186,6 @@ pub fn tokenize(input: &str) -> Vec<Token> {
     while let Some(c) = iter.next() {
         match classify(&c) {
             CharacterClass::Whitespace => {
-                // Skip whitespace characters
                 continue;
             }
             CharacterClass::Alphabetic => {
@@ -338,7 +337,7 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                         iter.next();
                     } else if c == '.' {
                         if is_float {
-                            break; // already encountered a dot, stop parsing
+                            break;
                         }
                         is_float = true;
                         number.push(c);
