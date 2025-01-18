@@ -5,6 +5,7 @@ pub mod create_table;
 pub mod select;
 pub mod statement;
 pub mod tokenizer;
+pub mod create_index;
 
 pub trait Parse {
     fn parse(input: &mut Peekable<Iter<Token>>) -> (Self, usize)

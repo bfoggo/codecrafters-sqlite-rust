@@ -7,6 +7,7 @@ use crate::typecodes::TypeCode;
 use super::select::SelectStmt;
 use super::tokenizer::Token;
 use super::Parse;
+use super::create_index::CreateIndexStmt;
 
 #[derive(Debug)]
 pub enum Statement {
@@ -15,7 +16,7 @@ pub enum Statement {
     Attach,
     Begin,
     Commit,
-    CreateIndex,
+    CreateIndex{stmt: CreateIndexStmt, unique: bool},
     CreateTable(CreateTableStmt),
     CreateTrigger,
     CreateView,
@@ -46,9 +47,18 @@ impl Parse for Statement {
                 let token = input.next().unwrap();
                 match token {
                     Token::Table => {
-                        let (stmt, _) = CreateTableStmt::parse(input);
-                        (Statement::CreateTable(stmt), 0)
-                    }
+                        let (stmt, n) = CreateTableStmt::parse(input);
+                        (Statement::CreateTable(stmt), n)
+                    },
+                    Token::Unique => {
+                        input.next();
+                        let (stmt, n) = CreateIndexStmt::parse(input);
+                        (Statement::CreateIndex{stmt, unique: false}, n)
+                    },
+                    Token::Index => {
+                        let (stmt, n) = CreateIndexStmt::parse(input);
+                        (Statement::CreateIndex{stmt, unique: false}, n)
+                    },
                     _ => unimplemented!(),
                 }
             }
