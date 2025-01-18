@@ -1,4 +1,5 @@
 use anyhow::{bail, Result};
+use std::cell;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{prelude::*, SeekFrom};
@@ -36,7 +37,7 @@ fn main() -> Result<()> {
             let mut file = File::open(&args[1])?;
             let dbheader = DbHeader::from_file(&mut file)?;
             let page = Page::from_file(&mut file, TABLESCHEMA_PAGE, &dbheader)?;
-            let schema = SqliteSchema::from_page(&page)?;
+            let schema = SqliteSchema::from_page(&mut file, &dbheader, &page)?;
             for table in schema.tables {
                 println!("{}", table.name);
             }
@@ -63,7 +64,7 @@ fn main() -> Result<()> {
             let mut file = File::open(&args[1])?;
             let dbheader = DbHeader::from_file(&mut file)?;
             let page = Page::from_file(&mut file, TABLESCHEMA_PAGE, &dbheader)?;
-            let schema = SqliteSchema::from_page(&page)?;
+            let schema = SqliteSchema::from_page(&mut file, &dbheader, &page)?;
             let tablename = *select_count_from
                 .split(" ")
                 .collect::<Vec<_>>()
@@ -77,7 +78,7 @@ fn main() -> Result<()> {
             let mut file = File::open(&args[1])?;
             let dbheader = DbHeader::from_file(&mut file)?;
             let page = Page::from_file(&mut file, TABLESCHEMA_PAGE, &dbheader)?;
-            let schema = SqliteSchema::from_page(&page)?;
+            let schema = SqliteSchema::from_page(&mut file, &dbheader, &page)?;
             let parsed_select_stmt = syntax::parse(&select_rows);
             let (cols, tablename) = match parsed_select_stmt {
                 Statement::Select(ref stmt) => (stmt.columns.clone(), stmt.table.clone()),
@@ -90,11 +91,11 @@ fn main() -> Result<()> {
                 _ => panic!("Expected CreateTable statement"),
             };
             let mut indices_of_selected_cols = Vec::new();
-            for selected_col in cols {
+            for selected_col in &cols {
                 let index_of_selected_col = table_schema
                     .columns
                     .iter()
-                    .position(|c| c.name == selected_col);
+                    .position(|c| c.name == *selected_col);
                 match index_of_selected_col {
                     Some(ix) => {
                         indices_of_selected_cols.push(ix);
@@ -122,9 +123,8 @@ fn main() -> Result<()> {
                 }
                 _ => panic!("Expected Select statement"),
             }
-            let table_page = Page::from_file(&mut file, table.unwrap().rootpage, &dbheader)?;
-            'outer: for i in 0..table_page.header.num_cells {
-                let record = read_record(&table_page, i as usize)?;
+            let records = full_table_scan(&mut file, &dbheader, table.unwrap().rootpage);
+            'outer: for record in records {
                 for (i, where_idx) in indices_of_where_cols.iter().enumerate() {
                     let where_col_val = &record.values[*where_idx];
                     let where_clause_val = &where_clause
@@ -138,15 +138,20 @@ fn main() -> Result<()> {
                                 continue 'outer;
                             }
                         }
+                        SqlValue::Null => continue 'outer,
                         _ => panic!("Only text values are supported for now"),
                     }
                 }
                 let mut selected_record_cols = Vec::new();
+                if cols.contains(&"id".to_string()) {
+                    selected_record_cols.push(record.rowid.to_string());
+                }
                 for ix in &indices_of_selected_cols {
                     match record.values[*ix] {
                         SqlValue::Text(ref val) => {
                             selected_record_cols.push(val.clone());
                         }
+                        SqlValue::Null => continue,
                         _ => panic!("Only text values are supported for now"),
                     }
                 }
@@ -154,7 +159,7 @@ fn main() -> Result<()> {
                 println!("{}", cols_as_joined_str);
             }
         }
-        _ => bail!("Unknown command: {}", command),
+        _ => panic!("Unknown command: {}", command),
     }
 
     Ok(())
@@ -192,7 +197,7 @@ struct PageHeader {
     num_cells: u16,
     cell_content_start: u16,
     num_fragments: u8,
-    reserved_region: Option<u32>,
+    rightmost_pointer: Option<u32>,
 }
 
 impl Page {
@@ -218,6 +223,20 @@ impl Page {
     }
 }
 
+struct OverflowPage {
+    data: Vec<u8>,
+}
+
+impl OverflowPage {
+    fn from_file(file: &mut File, page_offset: u64, dbheader: &DbHeader) -> Result<OverflowPage> {
+        let mut data = vec![0; dbheader.page_size as usize];
+        let start = (page_offset - 1) * (dbheader.page_size as u64);
+        file.seek(SeekFrom::Start(start))?;
+        file.read_to_end(&mut data).unwrap();
+        Ok(OverflowPage { data })
+    }
+}
+
 impl PageHeader {
     fn from_data(data: &[u8]) -> Result<(PageHeader, usize)> {
         let page_type = data[0];
@@ -236,7 +255,7 @@ impl PageHeader {
                 num_cells,
                 cell_content_start,
                 num_fragments,
-                reserved_region,
+                rightmost_pointer: reserved_region,
             },
             8 + match reserved_region {
                 Some(_) => 4,
@@ -246,10 +265,14 @@ impl PageHeader {
     }
 
     fn len(&self) -> usize {
-        8 + match self.reserved_region {
+        8 + match self.rightmost_pointer {
             Some(_) => 4,
             None => 0,
         }
+    }
+
+    fn is_interior(&self) -> bool {
+        self.page_type == 0x02 || self.page_type == 0x05
     }
 }
 
@@ -259,10 +282,10 @@ struct SqliteSchema {
 }
 
 impl SqliteSchema {
-    fn from_page(page: &Page) -> Result<SqliteSchema> {
+    fn from_page(file: &mut File, dbheader: &DbHeader, page: &Page) -> Result<SqliteSchema> {
         let mut tables = Vec::new();
         for i in 0..page.header.num_cells {
-            let record = read_record(page, i as usize)?;
+            let record = read_record(file, dbheader, page, i as usize)?;
             tables.push(Table::from_row(record)?);
         }
         Ok(SqliteSchema { tables })
@@ -281,6 +304,22 @@ impl TableSchema {
         let columns = ast.cols().iter().map(Column::from_ast).collect();
         TableSchema { name, columns }
     }
+
+    fn primary_key_index(&self) -> Option<usize> {
+        let mut i = 0;
+        let mut pkeys = Vec::new();
+        for col in &self.columns {
+            if col.is_primary_key {
+                pkeys.push(i);
+            }
+            i += 1;
+        }
+        return match pkeys.len() {
+            0 => None,
+            1 => Some(pkeys[0]),
+            _ => panic!("Multiple primary keys not supported"),
+        };
+    }
 }
 
 #[derive(Debug)]
@@ -295,12 +334,15 @@ struct Table {
 #[derive(Debug)]
 struct Column {
     name: String,
+    is_primary_key: bool,
 }
 
 impl Column {
     fn from_ast(ast: &syntax::create_table::ColumnDef) -> Column {
+        let is_primary_key = ast.constraints.iter().any(|c| c.is_primary_key());
         Column {
             name: ast.name.clone(),
+            is_primary_key,
         }
     }
 }
@@ -349,17 +391,77 @@ struct Record {
     values: Vec<SqlValue>,
 }
 
-fn read_record(page: &Page, cell_index: usize) -> Result<Record> {
+fn btree_pagenum_search(
+    file: &mut File,
+    dbheader: &DbHeader,
+    page_number: u64,
+    search_key: u64,
+) -> u64 {
+    let page = Page::from_file(file, page_number as u64, &dbheader).unwrap();
+    if !page.header.is_interior() {
+        return page_number;
+    }
+    let mut i = 0;
+    while i < page.pointer_array.len() {
+        let bytes = &page.data[page.pointer_array[i] as usize..];
+        let left_page = u32::from_be_bytes(bytes[0..4].try_into().unwrap());
+        let (key, _) = decode_varint(&bytes[4..12]);
+        if search_key < key {
+            return btree_pagenum_search(file, dbheader, left_page as u64, search_key);
+        }
+        i += 1;
+    }
+    return page.header.rightmost_pointer.unwrap() as u64;
+}
+
+fn full_table_scan(file: &mut File, dbheader: &DbHeader, page_number: u64) -> Vec<Record> {
+    let mut records = Vec::new();
+    let page = Page::from_file(file, page_number, dbheader).unwrap();
+    if page.header.is_interior() {
+        for i in 0..page.pointer_array.len() {
+            let bytes = &page.data[page.pointer_array[i] as usize..];
+            let left_page = u32::from_be_bytes(bytes[0..4].try_into().unwrap());
+            records.append(&mut full_table_scan(file, dbheader, left_page as u64));
+        }
+        let right_page = page.header.rightmost_pointer.unwrap();
+        records.append(&mut full_table_scan(file, dbheader, right_page as u64));
+    } else {
+        for i in 0..page.header.num_cells {
+            let record = read_record(file, dbheader, &page, i as usize).unwrap();
+            records.push(record);
+        }
+    }
+    records
+}
+
+fn read_record(
+    file: &mut File,
+    dbheader: &DbHeader,
+    page: &Page,
+    cell_index: usize,
+) -> Result<Record> {
     let cell_offset = page.pointer_array[cell_index] as usize;
     let (payload_size, payload_size_len) = decode_varint(&page.data[cell_offset..]);
     let (rowid, rowid_len) = decode_varint(&page.data[cell_offset + payload_size_len..]);
     let payload_start = cell_offset + payload_size_len + rowid_len;
-    let payload = page.data[payload_start..].to_vec();
+    let overflow = page.data.len() - payload_start - payload_size as usize;
+    let overflow_page = u32::from_be_bytes(
+        page.data[cell_offset + payload_size as usize - 4..cell_offset + payload_size as usize]
+            .try_into()
+            .unwrap(),
+    );
+    let mut overflow_data = Vec::new();
+    if overflow > 0 {
+        overflow_data = read_overflow(file, dbheader, overflow_page as u64, overflow);
+    }
+    let mut payload = page.data[payload_start..].to_vec();
+    payload.append(&mut overflow_data);
     let (record_headerlen, bytes_for_headerlen) = decode_varint(&payload[0..9]);
     let serial_types =
         decode_serial_types(&payload[bytes_for_headerlen..record_headerlen as usize]);
     let mut offset = record_headerlen as usize;
     let mut values: Vec<SqlValue> = Vec::with_capacity(serial_types.len());
+
     for t in serial_types {
         let size = t.size();
         let data = &payload[offset..offset + size];
@@ -371,4 +473,16 @@ fn read_record(page: &Page, cell_index: usize) -> Result<Record> {
         payload_size,
         values,
     })
+}
+
+fn read_overflow(
+    file: &mut File,
+    dbheader: &DbHeader,
+    page_number: u64,
+    num_overflow_bytes: usize,
+) -> Vec<u8> {
+    let mut overflow = Vec::new();
+    let page = OverflowPage::from_file(file, page_number, dbheader).unwrap();
+    overflow.append(&mut page.data[4..4 + num_overflow_bytes].to_vec());
+    overflow
 }

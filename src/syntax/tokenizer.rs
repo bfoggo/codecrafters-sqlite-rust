@@ -22,7 +22,7 @@ fn classify(c: &char) -> CharacterClass {
         | '\u{202F}'
         | '\u{205F}'
         | '\u{3000}' => CharacterClass::Whitespace,
-        '\u{0041}'..='\u{005A}' | '\u{0061}'..='\u{007A}' | '\u{000f}' | '\u{007f}'.. => {
+        '\u{0041}'..='\u{005A}' | '\u{0061}'..='\u{007A}' | '\u{000f}' | '\u{007f}' | '_'.. => {
             CharacterClass::Alphabetic
         }
         '\u{0030}'..='\u{0039}' => CharacterClass::Numeric,
@@ -402,7 +402,7 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                         }
                         string.push(c);
                     }
-                    tokens.push(Token::Literal(LiteralKind::Blob(string)));
+                    tokens.push(Token::Identifier(string));
                 } else{
                     tokens.push(Token::Operator(c.to_string()));
                 }

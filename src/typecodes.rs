@@ -27,8 +27,8 @@ impl TypeCode {
             TypeCode::I48 => 6,
             TypeCode::I64 => 8,
             TypeCode::F64 => 8,
-            TypeCode::Zero => 4,
-            TypeCode::One => 4,
+            TypeCode::Zero => 0,
+            TypeCode::One => 0,
             TypeCode::Blob(size) => *size,
             TypeCode::Text(size) => *size,
         }
@@ -67,12 +67,11 @@ impl TypeCode {
                 SqlValue::F64(val)
             }
             TypeCode::Zero => {
-                // why do we need 4 bytes for this?
-                let val = i32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+                let val = i32::from_be_bytes([0, 0, 0, 0]);
                 SqlValue::Zero
             }
             TypeCode::One => {
-                let val = i32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+                let val = i32::from_be_bytes([0, 0, 0, 1]);
                 SqlValue::One
             }
             TypeCode::Blob(size) => {
@@ -80,7 +79,7 @@ impl TypeCode {
                 SqlValue::Blob(blob)
             }
             TypeCode::Text(size) => {
-                let text = String::from_utf8(data[0..*size].to_vec()).unwrap();
+                let text = String::from_utf8_lossy(&data[0..*size]).into_owned();
                 SqlValue::Text(text)
             }
             _ => {

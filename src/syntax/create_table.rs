@@ -137,7 +137,7 @@ impl Parse for SchemaConstructor {
 pub struct ColumnDef {
     pub name: String,
     type_: Option<TypeCode>,
-    constraints: Vec<ColumnConstraint>,
+    pub constraints: Vec<ColumnConstraint>,
 }
 
 impl Parse for ColumnDef {
@@ -191,7 +191,7 @@ impl Parse for ColumnDef {
 }
 
 #[derive(Debug, Clone)]
-enum ColumnConstraint {
+pub enum ColumnConstraint {
     Name(Option<String>),
     PrimaryKey {
         ord_: Option<SortOrder>,
@@ -206,6 +206,15 @@ enum ColumnConstraint {
     Default,
     Collate,
     ForeignKey(ForeignKeyClause),
+}
+
+impl ColumnConstraint {
+    pub fn is_primary_key(&self) -> bool {
+        match self {
+            ColumnConstraint::PrimaryKey { .. } => true,
+            _ => false,
+        }
+    }
 }
 
 impl Parse for ColumnConstraint {
